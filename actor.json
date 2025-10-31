@@ -1,0 +1,91 @@
+{
+  "actorSpecification": 1,
+  "name": "youtube-viral-scout-proxy",
+  "title": "YouTube Viral Scout Proxy (YouTube scraper wrapper)",
+  "description": "Executa streamers/youtube-scraper (ou alternativas), filtra últimas N horas, calcula viral score e devolve Top-N. v0.3.5 (schema fix + better errors).",
+  "version": "0.3.5",
+  "dockerfile": "./Dockerfile",
+  "defaultRunOptions": {
+    "memoryMbytes": 1024,
+    "diskMbytes": 2048,
+    "build": "latest"
+  },
+  "input": {
+    "title": "YouTube Viral Scout Proxy Input",
+    "type": "object",
+    "properties": {
+      "upstreamApifyToken": {
+        "title": "UPSTREAM_APIFY_TOKEN (opcional)",
+        "type": "string"
+      },
+      "forwardInput": {
+        "title": "Input para youtube-scraper",
+        "type": "object",
+        "default": {
+          "searchQueries": [
+            "microgreens"
+          ],
+          "maxResults": 25,
+          "maxResultsShorts": 0,
+          "maxResultStreams": 0
+        }
+      },
+      "lastHours": {
+        "title": "Janela (horas)",
+        "type": "integer",
+        "default": 24
+      },
+      "topN": {
+        "title": "Top-N",
+        "type": "integer",
+        "default": 5
+      },
+      "minViews": {
+        "title": "Mínimo de visualizações",
+        "type": "integer",
+        "default": 0
+      },
+      "scoreWeights": {
+        "title": "Pesos do Score",
+        "type": "object",
+        "properties": {
+          "views": {
+            "type": "number",
+            "default": 0.6
+          },
+          "likes": {
+            "type": "number",
+            "default": 0.25
+          },
+          "comments": {
+            "type": "number",
+            "default": 0.15
+          }
+        },
+        "default": {
+          "views": 0.6,
+          "likes": 0.25,
+          "comments": 0.15
+        }
+      },
+      "maxDatasetItems": {
+        "title": "Limite itens dataset",
+        "type": "integer",
+        "default": 1000
+      },
+      "pollSeconds": {
+        "title": "Intervalo de polling (s)",
+        "type": "integer",
+        "default": 5
+      },
+      "pollTimeoutSeconds": {
+        "title": "Timeout polling (s)",
+        "type": "integer",
+        "default": 300
+      }
+    },
+    "required": [
+      "forwardInput"
+    ]
+  }
+}

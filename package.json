@@ -1,0 +1,13 @@
+{
+  "name": "youtube-viral-scout-proxy",
+  "version": "0.3.5",
+  "type": "commonjs",
+  "description": "Wrapper actor for streamers/youtube-scraper with viral scoring & filtering. v0.3.5.",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "apify": "^3.5.0",
+    "apify-client": "^2.17.0"
+  }
+}
