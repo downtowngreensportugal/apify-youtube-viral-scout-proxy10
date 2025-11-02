@@ -1,12 +1,13 @@
 const { Actor, log } = require('apify');
 const { ApifyClient } = require('apify-client');
 
-log.info('YouTube Viral Scout Proxy v0.3.5 — start');
+log.info('YouTube Viral Scout Proxy v0.3.6 — start');
 
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
 function parseDateAny(x) {
   if (!x) return null;
+  if (x instanceof Date) return isNaN(x.getTime()) ? null : x;
   if (typeof x === 'number') return new Date(x);
   const d = new Date(x);
   return isNaN(d.getTime()) ? null : d;
@@ -27,7 +28,7 @@ function normalize(item) {
   return { url, title, channel, views, likes, comments, publishedAt: publishedAt.toISOString(), _ageH: hoursSince(publishedAt), raw: item };
 }
 
-async function pollRunUntilDone(client, runId, pollSeconds=5, timeoutSeconds=300) {
+async function pollRunUntilDone(client, runId, pollSeconds = 5, timeoutSeconds = 300) {
   const start = Date.now();
   while (true) {
     const run = await client.run(runId).get();
@@ -38,17 +39,31 @@ async function pollRunUntilDone(client, runId, pollSeconds=5, timeoutSeconds=300
       const msg = run?.statusMessage || run?.data?.statusMessage || 'no statusMessage';
       throw new Error(`Upstream run ended with status: ${status}. Message: ${msg}`);
     }
-    if (((Date.now() - start)/1000) > timeoutSeconds) {
+    if (((Date.now() - start) / 1000) > timeoutSeconds) {
       throw new Error(`Polling timed out after ${timeoutSeconds}s`);
     }
     await wait(pollSeconds * 1000);
   }
 }
 
+// Converte formatos aceitáveis para lastHours
+function deriveLastHours(uploadDate, fallbackHours = 24) {
+  if (uploadDate == null) return fallbackHours;
+  // Se vier número (ex.: 24), assume já em horas
+  if (typeof uploadDate === 'number' && isFinite(uploadDate)) {
+    return Math.max(1, Math.floor(uploadDate));
+  }
+  // Se vier string tipo "2025-10-30T00:00:00Z" ou "2025-10-30"
+  const d = parseDateAny(uploadDate);
+  if (d) return Math.max(1, Math.round(hoursSince(d)));
+  // Se não deu para interpretar, usa fallback
+  return fallbackHours;
+}
+
 function normalizeForwardInput(fi) {
   if (!fi || typeof fi !== 'object') return {};
   const out = { ...fi };
-  // Accept "searchQuery" or "query" as string and convert to "searchQueries: []"
+  // Aceita "searchQuery" ou "query" como string e converte para array "searchQueries"
   if (typeof out.searchQuery === 'string' && !Array.isArray(out.searchQueries)) {
     out.searchQueries = [out.searchQuery];
     delete out.searchQuery;
@@ -57,7 +72,7 @@ function normalizeForwardInput(fi) {
     out.searchQueries = [out.query];
     delete out.query;
   }
-  // If user passed a single string directly in forwardInput, wrap it
+  // Se o utilizador passou uma string diretamente em forwardInput, envolver
   if (typeof fi === 'string') {
     return { searchQueries: [fi], maxResults: 25, maxResultsShorts: 0, maxResultStreams: 0 };
   }
@@ -67,29 +82,55 @@ function normalizeForwardInput(fi) {
 Actor.main(async () => {
   try {
     const input = await Actor.getInput() || {};
+
+    // 🔁 Compat: aceitar também searchKeywords / uploadDate no nível de raiz
+    // - searchKeywords: string ("ai videos") | array (["ai","microgreens"])
+    // - uploadDate: number (horas) OU data (ISO / string) → converte para lastHours
     let {
       upstreamApifyToken,
-      forwardInput = {"searchQueries":["microgreens"],"maxResults":25,"maxResultsShorts":0,"maxResultStreams":0},
-      lastHours = 24,
+      forwardInput,
+      searchKeywords,       // novo: compat externa
+      uploadDate,           // novo: compat externa
+      lastHours,            // se vier definido, respeitamos; senão derivamos do uploadDate (ou 24)
       topN = 5,
       minViews = 0,
       scoreWeights = { views: 0.6, likes: 0.25, comments: 0.15 },
       maxDatasetItems = 1000,
       pollSeconds = 5,
       pollTimeoutSeconds = 300,
+      upstreamActorIds,     // opcional: permitir override dos candidatos
     } = input;
 
-    forwardInput = normalizeForwardInput(forwardInput);
-    if (!forwardInput.searchQueries && forwardInput.searchQuery) {
-      forwardInput.searchQueries = Array.isArray(forwardInput.searchQuery) ? forwardInput.searchQuery : [forwardInput.searchQuery];
-      delete forwardInput.searchQuery;
+    // Default forwardInput se não vier
+    if (!forwardInput) {
+      forwardInput = { searchQueries: ['microgreens'], maxResults: 25, maxResultsShorts: 0, maxResultStreams: 0 };
     }
+
+    // Mapear searchKeywords (root) → forwardInput.searchQueries
+    if (searchKeywords) {
+      const arr = Array.isArray(searchKeywords)
+        ? searchKeywords
+        : String(searchKeywords).split(',').map(s => s.trim()).filter(Boolean);
+      if (!forwardInput || typeof forwardInput !== 'object') forwardInput = {};
+      forwardInput.searchQueries = arr.length ? arr : ['microgreens'];
+    }
+
+    // Normalizar forwardInput (aceita "searchQuery"/"query" antigos)
+    forwardInput = normalizeForwardInput(forwardInput);
     if (!Array.isArray(forwardInput.searchQueries) || forwardInput.searchQueries.length === 0) {
-      forwardInput.searchQueries = ["microgreens"];
+      forwardInput.searchQueries = ['microgreens'];
     }
     if (typeof forwardInput.maxResults !== 'number') forwardInput.maxResults = 25;
     if (typeof forwardInput.maxResultsShorts !== 'number') forwardInput.maxResultsShorts = 0;
     if (typeof forwardInput.maxResultStreams !== 'number') forwardInput.maxResultStreams = 0;
+
+    // Derivar lastHours a partir de uploadDate se não vier explícito
+    if (lastHours == null) {
+      lastHours = deriveLastHours(uploadDate, 24);
+    } else {
+      // garantir mínimo
+      lastHours = Math.max(1, Number(lastHours) || 24);
+    }
 
     const upstreamToken = upstreamApifyToken || process.env.UPSTREAM_APIFY_TOKEN;
     if (!upstreamToken) {
@@ -97,11 +138,13 @@ Actor.main(async () => {
     }
     const client = new ApifyClient({ token: upstreamToken });
 
-    const CANDIDATES = [
-      'streamers/youtube-scraper',
-      'streamers/youtube-videos-scraper',
-      'runtime/youtube-channel-scraper',
-    ];
+    const CANDIDATES = Array.isArray(upstreamActorIds) && upstreamActorIds.length
+      ? upstreamActorIds
+      : [
+          'streamers/youtube-scraper',
+          'streamers/youtube-videos-scraper',
+          'runtime/youtube-channel-scraper',
+        ];
 
     let run = null, lastErr = null, usedId = null;
     for (const id of CANDIDATES) {
@@ -138,7 +181,7 @@ Actor.main(async () => {
           + (i.comments / i._ageH) * scoreWeights.comments;
         return { ...i, score };
       })
-      .sort((a,b) => b.score - a.score)
+      .sort((a, b) => b.score - a.score)
       .slice(0, topN);
 
     for (const it of filtered) {
@@ -155,15 +198,28 @@ Actor.main(async () => {
       });
     }
 
-    await Actor.setValue('OUTPUT', { ok: true, count: filtered.length, topN, lastHours, items: filtered });
-    log.info('Concluído com sucesso (v0.3.5).');
+    await Actor.setValue('OUTPUT', {
+      ok: true,
+      count: filtered.length,
+      topN,
+      lastHours,
+      items: filtered,
+      usedUpstream: usedId,
+      inputEcho: {
+        searchQueries: forwardInput.searchQueries,
+        maxResults: forwardInput.maxResults,
+        maxResultsShorts: forwardInput.maxResultsShorts,
+        maxResultStreams: forwardInput.maxResultStreams,
+      }
+    });
+    log.info('Concluído com sucesso (v0.3.6).');
   } catch (err) {
     log.error(`Erro não tratado: ${err?.message}`);
     await Actor.setValue('OUTPUT', {
       ok: false,
       error: String(err?.message || err),
       stack: String(err?.stack || ''),
-      hint: 'Confirma UPSTREAM_APIFY_TOKEN nas env vars e o schema do forwardInput: use searchQueries: [...].'
+      hint: 'Pode enviar searchKeywords (string/array) e uploadDate (horas ou data ISO). Internamente mapeamos para forwardInput.searchQueries e lastHours.'
     });
     throw err;
   }
